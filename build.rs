@@ -3,7 +3,10 @@ use bindgen::{callbacks, Bindings};
 use camino::Utf8Path as Path;
 use camino::Utf8PathBuf as PathBuf;
 use once_cell::sync::Lazy;
-use std::{collections::HashSet, env, fs};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+};
 
 /// All the libs that FFmpeg has
 static LIBS: Lazy<[&str; 7]> = Lazy::new(|| {
@@ -16,6 +19,38 @@ static LIBS: Lazy<[&str; 7]> = Lazy::new(|| {
         "swresample",
         "swscale",
     ]
+});
+
+static SYS_STATIC_LIBS: Lazy<HashMap<&str, Vec<&str>>> = Lazy::new(|| {
+    if cfg!(target_os = "windows") {
+        // Statically linking FFmpeg on Windows requires additional dependencies.  This is a map
+        // of FFmpeg library name to system libraries.  In the future, if
+        // https://github.com/CCExtractor/rusty_ffmpeg/issues/128 is addressed, we will want to
+        // selectively choose which system libraries to link based on chosen FFmpeg features.
+        //
+        // Note that the values were obtained by building FFmpeg using vcpkg with the
+        // x64-windows-static triplet, and then examining the generated .pc files in the pkgconfig
+        // directory.
+        HashMap::from([
+            (
+                "avcodec",
+                vec!["mfuuid", "ole32", "strmiids", "ole32", "user32"],
+            ),
+            (
+                "avdevice",
+                vec![
+                    "psapi", "ole32", "strmiids", "uuid", "oleaut32", "shlwapi", "gdi32", "vfw32",
+                ],
+            ),
+            ("avfilter", vec![]),
+            ("avformat", vec!["secur32", "ws2_32"]),
+            ("avutil", vec!["user32", "bcrypt"]),
+            ("swresample", vec![]),
+            ("swscale", vec![]),
+        ])
+    } else {
+        HashMap::new()
+    }
 });
 
 /// Whitelist of the headers we want to generate bindings
@@ -399,6 +434,16 @@ fn dynamic_linking(env_vars: &EnvVars) {
 fn static_linking(env_vars: &EnvVars) {
     let output_binding_path = &env_vars.out_dir.as_ref().unwrap().join("binding.rs");
 
+    fn static_link_sys_libs() {
+        // Statically linking to FFmpeg may also require us to link to some system libraries.
+        let mut sys_libs: Vec<_> = SYS_STATIC_LIBS.values().flatten().collect();
+        sys_libs.sort();
+        sys_libs.dedup();
+        for sys_lib in sys_libs {
+            println!("cargo:rustc-link-lib={sys_lib}");
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     {
         fn static_linking_with_pkg_config_and_bindgen(
@@ -419,6 +464,7 @@ fn static_linking(env_vars: &EnvVars) {
                     .write_to_file(output_binding_path)
                     .expect("Cannot write binding to file.");
             }
+            static_link_sys_libs();
             Ok(())
         }
         // Hint: set PKG_CONFIG_PATH to some placeholder value will let pkg_config probing system library.
@@ -491,6 +537,7 @@ Enable `link_vcpkg_ffmpeg` feature if you want to link ffmpeg libraries installe
     {
         if let Some(ffmpeg_libs_dir) = env_vars.ffmpeg_libs_dir.as_ref() {
             static_linking_with_libs_dir(&*LIBS, ffmpeg_libs_dir);
+            static_link_sys_libs();
             if let Some(ffmpeg_binding_path) = env_vars.ffmpeg_binding_path.as_ref() {
                 use_prebuilt_binding(ffmpeg_binding_path, output_binding_path);
             } else if let Some(ffmpeg_include_dir) = env_vars.ffmpeg_include_dir.as_ref() {
