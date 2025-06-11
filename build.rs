@@ -442,6 +442,8 @@ fn static_linking(env_vars: &EnvVars) {
         for sys_lib in sys_libs {
             println!("cargo:rustc-link-lib={sys_lib}");
         }
+        #[cfg(target_os = "windows")]
+        println!("cargo:rustc-link-lib=stdc++");
     }
 
     #[cfg(not(target_os = "windows"))]
